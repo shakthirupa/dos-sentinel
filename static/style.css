@@ -241,6 +241,21 @@ nav { flex: 1; }
     animation: anomaly-pulse 1.5s infinite;
 }
 
+.threat-card.cooldown {
+    border-color: #4a3a10;
+    border-left-color: #ffb63e;
+    box-shadow: 0 0 30px rgba(255,182,62,.07);
+}
+
+.threat-card.cooldown .shield {
+    background: #4a3a10;
+    color: #ffb63e;
+    box-shadow: 0 0 20px rgba(255,182,62,.2);
+}
+
+.threat-card.cooldown .threat-main h2 { color: #ffb63e; }
+.threat-card.cooldown .threat-main p  { color: #d4a04a; }
+
 @keyframes anomaly-pulse {
     0%, 100% { box-shadow: 0 0 20px rgba(255,70,84,.06); }
     50%       { box-shadow: 0 0 50px rgba(255,70,84,.18); }
@@ -486,6 +501,11 @@ tr:hover td { background: rgba(255,255,255,.02); }
 .status-normal     { background: #0d4a31; color: #48e99a; }
 .status-anomaly    { background: #541c25; color: #ff6975; }
 .status-suspicious { background: #543b13; color: #ffb63e; }
+.status-cooldown   { background: #4a3a10; color: #ffb63e; }
+
+.risk-low    { background: #0d4a31; color: #48e99a; }
+.risk-medium { background: #543b13; color: #ffb63e; }
+.risk-high   { background: #541c25; color: #ff6975; }
 
 /* ═══════════════════════════════════════════════════
    IP MANAGER
@@ -688,4 +708,60 @@ tr:hover td { background: rgba(255,255,255,.02); }
 
 @media (max-width: 600px) {
     .sim-grid { grid-template-columns: 1fr; }
+}
+
+/* ═══════════════════════════════════════════════════
+   HTTP TELEMETRY PANEL
+═══════════════════════════════════════════════════ */
+
+.http-unavailable {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 20px 18px;
+    color: #607b99;
+    font-size: 12px;
+}
+
+.http-unavailable code {
+    background: #0c1c2d;
+    border: 1px solid #203b55;
+    border-radius: 4px;
+    padding: 2px 6px;
+    color: #9eb3cc;
+    font-size: 11px;
+}
+
+.http-metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 0;
+}
+
+.http-metric {
+    padding: 14px 18px;
+    border-right: 1px solid #152c43;
+}
+
+.http-metric:last-child { border-right: none; }
+
+.http-metric span {
+    display: block;
+    color: #607b99;
+    font-size: 9px;
+    margin-bottom: 6px;
+}
+
+.http-metric strong {
+    display: block;
+    font-size: 20px;
+}
+
+@media (max-width: 1200px) {
+    .http-metrics-grid { grid-template-columns: repeat(3, 1fr); }
+    .http-metric { border-bottom: 1px solid #152c43; }
+}
+
+@media (max-width: 600px) {
+    .http-metrics-grid { grid-template-columns: repeat(2, 1fr); }
 }

@@ -1,0 +1,24 @@
+{
+  "model_version": "v4.0",
+  "model_type": "IsolationForest",
+  "scaler_type": "StandardScaler",
+  "features": [
+    "syn_recv",
+    "established",
+    "total_connections",
+    "bytes_sent_per_sec",
+    "bytes_recv_per_sec"
+  ],
+  "v3_features": [
+    "syn_recv",
+    "established",
+    "total_connections"
+  ],
+  "training_samples": 8499,
+  "n_estimators": 100,
+  "contamination": 0.05,
+  "random_state": 42,
+  "training_timestamp": "2026-10-02T22:01:06.225327",
+  "source_dataset": "traffic_data.csv",
+  "dataset_note": "Dataset contains both normal and synthetic attack samples. Retrain on clean baseline for production use."
+}

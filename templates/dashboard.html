@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DoS Sentinel v3</title>
+<title>DoS Sentinel v4</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -19,7 +19,7 @@
       <div class="logo-icon">🛡</div>
       <div>
         <h1>DoS Sentinel</h1>
-        <span>ML-Based Security v3</span>
+        <span>ML-Based Security v4</span>
       </div>
     </div>
 
@@ -74,6 +74,7 @@
     <!-- ─── DASHBOARD ─── -->
     <section id="sec-dashboard" class="section active">
 
+      <!-- Threat card -->
       <div class="threat-card" id="threatCard">
         <div class="threat-main">
           <div class="shield" id="shieldIcon">✓</div>
@@ -94,8 +95,14 @@
             <strong id="riskLevel">LOW</strong>
           </div>
           <div class="mini-card">
+            <span>CONFIDENCE</span>
+            <strong id="confidenceLevel">LOW</strong>
+            <small>Anomaly severity</small>
+          </div>
+          <div class="mini-card">
             <span>ATTACK TYPE</span>
             <strong id="attackType" style="font-size:16px">—</strong>
+            <small id="attackTypeSource" style="color:#607b99">—</small>
           </div>
           <div class="mini-card">
             <span>TOTAL ANOMALIES</span>
@@ -103,13 +110,14 @@
             <small>All time (DB)</small>
           </div>
           <div class="mini-card">
-            <span>CONN VELOCITY</span>
-            <strong id="connVelocity">0</strong>
-            <small>conns/sec</small>
+            <span>MODEL VERSION</span>
+            <strong id="modelVersion" style="font-size:16px">—</strong>
+            <small id="modelStatus" style="color:#42f398">—</small>
           </div>
         </div>
       </div>
 
+      <!-- Network metrics -->
       <section class="metrics">
         <div class="metric-card red">
           <div class="metric-icon">◈</div>
@@ -137,6 +145,47 @@
         </div>
       </section>
 
+      <!-- HTTP Telemetry panel -->
+      <div class="panel http-panel" id="httpPanel" style="margin-bottom:14px">
+        <div class="panel-header">
+          <div>
+            <h2>Protected Server — HTTP Telemetry</h2>
+            <span>127.0.0.1:8000 · application-layer metrics</span>
+          </div>
+          <span id="httpAvailBadge" class="live-badge">● LIVE</span>
+        </div>
+        <div id="httpUnavailable" class="http-unavailable" style="display:none">
+          <span>⚠</span> HTTP telemetry unavailable — start <code>python server.py</code>
+        </div>
+        <div id="httpMetrics" class="http-metrics-grid">
+          <div class="http-metric">
+            <span>TOTAL REQUESTS</span>
+            <strong id="httpTotal">0</strong>
+          </div>
+          <div class="http-metric">
+            <span>REQUESTS / SEC</span>
+            <strong id="httpRps">0</strong>
+          </div>
+          <div class="http-metric">
+            <span>SUCCESSFUL (2xx)</span>
+            <strong id="httpSuccess" style="color:#42f398">0</strong>
+          </div>
+          <div class="http-metric">
+            <span>ERRORS (4xx+5xx)</span>
+            <strong id="httpErrors" style="color:#ff5360">0</strong>
+          </div>
+          <div class="http-metric">
+            <span>AVG RESPONSE TIME</span>
+            <strong id="httpAvgRt">0 ms</strong>
+          </div>
+          <div class="http-metric">
+            <span>STATUS CODES</span>
+            <strong id="httpStatusCodes" style="font-size:11px;line-height:1.6">—</strong>
+          </div>
+        </div>
+      </div>
+
+      <!-- Charts -->
       <section class="middle-grid">
         <div class="panel traffic-panel">
           <div class="panel-header">
@@ -162,6 +211,7 @@
         </div>
       </section>
 
+      <!-- Recent activity -->
       <div class="panel events-panel">
         <div class="panel-header">
           <div><h2>Recent Network Activity</h2><span>Latest security events — live</span></div>
@@ -172,8 +222,8 @@
             <thead>
               <tr>
                 <th>TIME</th><th>EVENT</th><th>SYN_RECV</th>
-                <th>CONNECTIONS</th><th>VELOCITY</th><th>SCORE</th>
-                <th>ATTACK TYPE</th><th>STATUS</th>
+                <th>CONNECTIONS</th><th>SCORE</th>
+                <th>ATTACK TYPE</th><th>CONFIDENCE</th><th>STATUS</th>
               </tr>
             </thead>
             <tbody id="eventsTable"></tbody>
@@ -206,8 +256,8 @@
           <table>
             <thead>
               <tr>
-                <th>TIME</th><th>SYN_RECV</th><th>CONNECTIONS</th>
-                <th>VELOCITY</th><th>SCORE</th><th>ATTACK TYPE</th><th>RISK</th>
+                <th>TIME</th><th>DETECTION</th><th>ATTACK TYPE</th>
+                <th>CONFIDENCE</th><th>RISK</th><th>SCORE</th><th>SOURCE IP</th>
               </tr>
             </thead>
             <tbody id="attackTable"></tbody>
@@ -340,8 +390,9 @@
             <div class="stat-row"><span>Total Events (DB)</span><strong id="statEvents">0</strong></div>
             <div class="stat-row"><span>Total Anomalies (DB)</span><strong id="statAnomalies" style="color:#ff5360">0</strong></div>
             <div class="stat-row"><span>Blocked IPs</span><strong id="statBlocked" style="color:#ffb63e">0</strong></div>
-            <div class="stat-row"><span>ML Model</span><strong style="color:#42f398">Isolation Forest</strong></div>
-            <div class="stat-row"><span>Model Status</span><strong style="color:#42f398">● ACTIVE</strong></div>
+            <div class="stat-row"><span>ML Model</span><strong id="statModelType" style="color:#42f398">Isolation Forest</strong></div>
+            <div class="stat-row"><span>Model Version</span><strong id="statModelVersion" style="color:#42f398">—</strong></div>
+            <div class="stat-row"><span>Model Status</span><strong id="statModelStatus" style="color:#42f398">● ACTIVE</strong></div>
           </div>
         </div>
 

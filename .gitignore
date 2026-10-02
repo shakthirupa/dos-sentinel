@@ -1,4 +1,4 @@
-# Python
+# ── Python ─────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
@@ -9,28 +9,42 @@ dist/
 build/
 .eggs/
 
-# Virtual environments
+# ── Virtual environments ────────────────────────────────
 venv/
 env/
 .venv/
 
-# Environment / secrets
+# ── Environment / secrets ───────────────────────────────
 .env
 
-# Database (runtime data — don't commit)
+# ── SQLite database (runtime data — regenerated on startup) ──
 sentinel.db
+sentinel.db-shm
+sentinel.db-wal
 
-# ML model (large binary — regenerate with train.py)
+# ── v4 model artifacts (regenerate with: python train.py) ────
+# model_meta.json is intentionally NOT ignored — it is small
+# and useful as a reference for what was trained.
+models/isolation_forest.pkl
+models/scaler.pkl
+models/*.tmp.pkl
+models/*.tmp.json
+
+# ── v3 legacy model (superseded by models/ artifacts) ──────
 dos_model.pkl
 
-# Collected data files
+# ── Generated evaluation reports ───────────────────────────
+reports/
+
+# ── Collected baseline data (machine-specific, generated) ──
+data/normal_baseline.csv
 real_baseline.csv
 
-# OS
+# ── OS ──────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# IDE
+# ── IDE ─────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
