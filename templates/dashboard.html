@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DoS Sentinel v3</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ═══════════════════════════════ SIDEBAR ═══ -->
+  <aside class="sidebar">
+
+    <div class="logo">
+      <div class="logo-icon">🛡</div>
+      <div>
+        <h1>DoS Sentinel</h1>
+        <span>ML-Based Security v3</span>
+      </div>
+    </div>
+
+    <nav>
+      <a class="nav-item active" data-section="dashboard"><span>⌂</span> Dashboard</a>
+      <a class="nav-item" data-section="traffic"><span>◉</span> Live Traffic</a>
+      <a class="nav-item" data-section="attacks">
+        <span>⚠</span> Attack Log
+        <span class="badge" id="attackBadge">0</span>
+      </a>
+      <a class="nav-item" data-section="ips"><span>◎</span> IP Manager</a>
+      <a class="nav-item" data-section="simulator"><span>⚡</span> Simulator</a>
+      <a class="nav-item" data-section="system"><span>▣</span> System</a>
+    </nav>
+
+    <div class="sidebar-bottom">
+      <div class="small-title">SERVER STATUS</div>
+      <div class="server-online"><span class="dot green pulse"></span> Online</div>
+      <div class="server-address">127.0.0.1:8000</div>
+      <div class="uptime" id="sidebarUptime">◷ 00:00:00</div>
+    </div>
+
+  </aside>
+
+  <!-- ═══════════════════════════════ MAIN ═══════ -->
+  <main class="main">
+
+    <!-- TOP BAR -->
+    <div class="topbar">
+      <div class="protected-server">
+        <span class="dot green pulse"></span>
+        Protected Server <strong>127.0.0.1:8000</strong>
+        <span class="separator"></span>
+        <span class="dot green pulse"></span> WebSocket Live
+      </div>
+      <div class="top-actions">
+        <div id="clock">--:--:--</div>
+        <div class="ws-status">
+          <span class="dot" id="wsDot"></span>
+          <span id="wsLabel">Connecting…</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ALERT BANNER -->
+    <div class="alert-banner" id="alertBanner">
+      <span class="alert-icon">🚨</span>
+      <span id="alertText">DoS Anomaly Detected</span>
+      <button onclick="dismissAlert()">✕</button>
+    </div>
+
+    <!-- ─── DASHBOARD ─── -->
+    <section id="sec-dashboard" class="section active">
+
+      <div class="threat-card" id="threatCard">
+        <div class="threat-main">
+          <div class="shield" id="shieldIcon">✓</div>
+          <div>
+            <div class="section-label">CURRENT THREAT STATUS</div>
+            <h2 id="threatStatus">NORMAL</h2>
+            <p id="threatMessage">Server traffic appears normal</p>
+          </div>
+        </div>
+        <div class="threat-stats">
+          <div class="mini-card">
+            <span>ANOMALY SCORE</span>
+            <strong id="anomalyScore">0.000</strong>
+            <small>Isolation Forest</small>
+          </div>
+          <div class="mini-card">
+            <span>RISK LEVEL</span>
+            <strong id="riskLevel">LOW</strong>
+          </div>
+          <div class="mini-card">
+            <span>ATTACK TYPE</span>
+            <strong id="attackType" style="font-size:16px">—</strong>
+          </div>
+          <div class="mini-card">
+            <span>TOTAL ANOMALIES</span>
+            <strong id="totalAnomalies">0</strong>
+            <small>All time (DB)</small>
+          </div>
+          <div class="mini-card">
+            <span>CONN VELOCITY</span>
+            <strong id="connVelocity">0</strong>
+            <small>conns/sec</small>
+          </div>
+        </div>
+      </div>
+
+      <section class="metrics">
+        <div class="metric-card red">
+          <div class="metric-icon">◈</div>
+          <div class="metric-content"><span>SYN_RECV</span><strong id="synRecv">0</strong><small>Half-open</small></div>
+        </div>
+        <div class="metric-card blue">
+          <div class="metric-icon">⇄</div>
+          <div class="metric-content"><span>ESTABLISHED</span><strong id="established">0</strong><small>Active</small></div>
+        </div>
+        <div class="metric-card purple">
+          <div class="metric-icon">◉</div>
+          <div class="metric-content"><span>TOTAL CONNECTIONS</span><strong id="totalConnections">0</strong><small>TCP</small></div>
+        </div>
+        <div class="metric-card green-card">
+          <div class="metric-icon">↑</div>
+          <div class="metric-content"><span>BYTES SENT/SEC</span><strong id="bytesSent">0 B/s</strong><small>Upload</small></div>
+        </div>
+        <div class="metric-card orange">
+          <div class="metric-icon">↓</div>
+          <div class="metric-content"><span>BYTES RECV/SEC</span><strong id="bytesReceived">0 B/s</strong><small>Download</small></div>
+        </div>
+        <div class="metric-card cyan">
+          <div class="metric-icon">⚡</div>
+          <div class="metric-content"><span>CONN VELOCITY</span><strong id="velocityCard">0/s</strong><small>Rate</small></div>
+        </div>
+      </section>
+
+      <section class="middle-grid">
+        <div class="panel traffic-panel">
+          <div class="panel-header">
+            <div><h2>Live Network Traffic</h2><span>Real-time monitoring</span></div>
+            <div class="chart-controls">
+              <button class="selected" onclick="setChartMode('syn')">SYN_RECV</button>
+              <button onclick="setChartMode('est')">Established</button>
+              <button onclick="setChartMode('all')">All</button>
+            </div>
+          </div>
+          <div class="chart-container"><canvas id="trafficChart"></canvas></div>
+        </div>
+        <div class="panel distribution-panel">
+          <div class="panel-header"><div><h2>Traffic Distribution</h2><span>Session classification</span></div></div>
+          <div class="donut-container">
+            <canvas id="distributionChart"></canvas>
+            <div class="donut-center"><span>TOTAL</span><strong id="donutTotal">0</strong><small>Events</small></div>
+          </div>
+          <div class="distribution-legend">
+            <div><span class="legend-dot blue-bg"></span>Normal<strong id="normalPercent">100%</strong></div>
+            <div><span class="legend-dot red-bg"></span>Anomaly<strong id="anomalyPercent">0%</strong></div>
+          </div>
+        </div>
+      </section>
+
+      <div class="panel events-panel">
+        <div class="panel-header">
+          <div><h2>Recent Network Activity</h2><span>Latest security events — live</span></div>
+          <span class="live-badge">● LIVE</span>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>TIME</th><th>EVENT</th><th>SYN_RECV</th>
+                <th>CONNECTIONS</th><th>VELOCITY</th><th>SCORE</th>
+                <th>ATTACK TYPE</th><th>STATUS</th>
+              </tr>
+            </thead>
+            <tbody id="eventsTable"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ─── LIVE TRAFFIC ─── -->
+    <section id="sec-traffic" class="section">
+      <div class="panel" style="margin-bottom:14px">
+        <div class="panel-header"><div><h2>Multi-Metric Live Chart</h2><span>SYN_RECV · Established · Total Connections</span></div></div>
+        <div style="height:380px;padding:15px"><canvas id="multiChart"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><div><h2>Bytes Throughput</h2><span>Upload vs Download per second</span></div></div>
+        <div style="height:280px;padding:15px"><canvas id="bytesChart"></canvas></div>
+      </div>
+    </section>
+
+    <!-- ─── ATTACK LOG ─── -->
+    <section id="sec-attacks" class="section">
+      <div class="panel">
+        <div class="panel-header">
+          <div><h2>Attack Event Log</h2><span>All detected anomalies — persisted in DB</span></div>
+          <span class="live-badge">● LIVE</span>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>TIME</th><th>SYN_RECV</th><th>CONNECTIONS</th>
+                <th>VELOCITY</th><th>SCORE</th><th>ATTACK TYPE</th><th>RISK</th>
+              </tr>
+            </thead>
+            <tbody id="attackTable"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── IP MANAGER ─── -->
+    <section id="sec-ips" class="section">
+      <div class="panel">
+        <div class="panel-header">
+          <div><h2>Top Source IPs</h2><span>Live connections — block/unblock</span></div>
+          <span id="blockedCount" class="badge-large">0 Blocked</span>
+        </div>
+        <div id="ipTable" class="ip-table"></div>
+      </div>
+    </section>
+
+    <!-- ─── SIMULATOR ─── -->
+    <section id="sec-simulator" class="section">
+
+      <div class="panel" style="margin-bottom:14px">
+        <div class="panel-header">
+          <div><h2>Attack Simulator</h2><span>Launch controlled attacks against the protected server to test detection</span></div>
+          <span id="simStatus" class="live-badge" style="background:rgba(145,78,255,.1);border-color:rgba(145,78,255,.3);color:#b180ff">IDLE</span>
+        </div>
+        <div class="sim-grid">
+
+          <div class="sim-card">
+            <div class="sim-icon" style="background:#5a2430;color:#ff6572">◈</div>
+            <strong>SYN Flood</strong>
+            <span>Half-open TCP connections overwhelm the server</span>
+            <div class="sim-btns">
+              <button onclick="launchSim('syn','low')">Low</button>
+              <button onclick="launchSim('syn','medium')" class="selected">Med</button>
+              <button onclick="launchSim('syn','high')">High</button>
+            </div>
+          </div>
+
+          <div class="sim-card">
+            <div class="sim-icon" style="background:#0c3f91;color:#4fa8ff">⇄</div>
+            <strong>HTTP Flood</strong>
+            <span>Rapid GET request storm to exhaust server threads</span>
+            <div class="sim-btns">
+              <button onclick="launchSim('http','low')">Low</button>
+              <button onclick="launchSim('http','medium')" class="selected">Med</button>
+              <button onclick="launchSim('http','high')">High</button>
+            </div>
+          </div>
+
+          <div class="sim-card">
+            <div class="sim-icon" style="background:#422071;color:#b180ff">◉</div>
+            <strong>Slowloris</strong>
+            <span>Hold connections open with partial HTTP headers</span>
+            <div class="sim-btns">
+              <button onclick="launchSim('slowloris','low')">Low</button>
+              <button onclick="launchSim('slowloris','medium')" class="selected">Med</button>
+              <button onclick="launchSim('slowloris','high')">High</button>
+            </div>
+          </div>
+
+          <div class="sim-card">
+            <div class="sim-icon" style="background:#644318;color:#ffb34b">⚡</div>
+            <strong>Conn Exhaustion</strong>
+            <span>Max open sockets to exhaust connection pool</span>
+            <div class="sim-btns">
+              <button onclick="launchSim('exhaust','low')">Low</button>
+              <button onclick="launchSim('exhaust','medium')" class="selected">Med</button>
+              <button onclick="launchSim('exhaust','high')">High</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div><h2>Auto-Block Settings</h2><span>Automatically block IPs that repeatedly trigger anomalies</span></div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <span style="color:#8299b6;font-size:12px">Threshold:</span>
+            <input id="thresholdInput" type="number" min="1" max="20" value="3"
+              style="width:55px;background:#0c1c2d;border:1px solid #203b55;color:#e8f0ff;padding:6px 8px;border-radius:6px;font-size:12px">
+            <button onclick="saveAutoBlock()" class="btn-block" style="padding:7px 14px;font-size:11px">Save</button>
+            <button id="autoBlockToggle" onclick="toggleAutoBlock()" class="btn-unblock" style="padding:7px 14px;font-size:11px">Auto-Block: ON</button>
+          </div>
+        </div>
+        <div class="stats-list">
+          <div class="stat-row"><span>Auto-Block Status</span><strong id="abStatus" style="color:#42f398">ENABLED</strong></div>
+          <div class="stat-row"><span>Trigger Threshold</span><strong id="abThreshold">3 anomalies</strong></div>
+          <div class="stat-row"><span>Currently Blocked</span><strong id="abBlocked" style="color:#ffb63e">0 IPs</strong></div>
+          <div class="stat-row"><span>Persistence</span><strong style="color:#42f398">SQLite DB — survives restart</strong></div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ─── SYSTEM ─── -->
+    <section id="sec-system" class="section">
+      <div class="system-grid">
+
+        <div class="panel gauge-panel">
+          <div class="panel-header"><h2>CPU Usage</h2></div>
+          <div class="gauge-wrap">
+            <canvas id="gaugeCpu" width="180" height="180"></canvas>
+            <div class="gauge-label" id="gaugeCpuLabel">0%</div>
+          </div>
+        </div>
+
+        <div class="panel gauge-panel">
+          <div class="panel-header"><h2>Memory</h2></div>
+          <div class="gauge-wrap">
+            <canvas id="gaugeMem" width="180" height="180"></canvas>
+            <div class="gauge-label" id="gaugeMemLabel">0%</div>
+          </div>
+        </div>
+
+        <div class="panel gauge-panel">
+          <div class="panel-header"><h2>Network Activity</h2></div>
+          <div class="gauge-wrap">
+            <canvas id="gaugeNet" width="180" height="180"></canvas>
+            <div class="gauge-label" id="gaugeNetLabel">0%</div>
+          </div>
+        </div>
+
+        <div class="panel stats-panel">
+          <div class="panel-header"><h2>Session Stats</h2></div>
+          <div class="stats-list">
+            <div class="stat-row"><span>Uptime</span><strong id="statUptime">00:00:00</strong></div>
+            <div class="stat-row"><span>Total Events (DB)</span><strong id="statEvents">0</strong></div>
+            <div class="stat-row"><span>Total Anomalies (DB)</span><strong id="statAnomalies" style="color:#ff5360">0</strong></div>
+            <div class="stat-row"><span>Blocked IPs</span><strong id="statBlocked" style="color:#ffb63e">0</strong></div>
+            <div class="stat-row"><span>ML Model</span><strong style="color:#42f398">Isolation Forest</strong></div>
+            <div class="stat-row"><span>Model Status</span><strong style="color:#42f398">● ACTIVE</strong></div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>
