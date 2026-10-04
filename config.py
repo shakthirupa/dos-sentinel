@@ -181,6 +181,14 @@ SIMULATOR_INTENSITY = {
 BASELINE_COLLECTION_DURATION = 180   # 3 minutes
 
 
+# ── URL Probe ─────────────────────────────────────────────────────────────────
+# Timeout in seconds for the outbound HTTP probe request.
+URL_PROBE_TIMEOUT = 5
+
+# Minimum seconds between successive probe requests (in-memory rate limit).
+URL_PROBE_COOLDOWN_SECS = 2
+
+
 # ── Database ───────────────────────────────────────────────────────────────────
 DB_FILE = BASE_DIR / "sentinel.db"
 

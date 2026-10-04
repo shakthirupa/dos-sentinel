@@ -32,6 +32,7 @@
       </a>
       <a class="nav-item" data-section="ips"><span>◎</span> IP Manager</a>
       <a class="nav-item" data-section="simulator"><span>⚡</span> Simulator</a>
+      <a class="nav-item" data-section="urlprobe"><span>⌕</span> URL Probe</a>
       <a class="nav-item" data-section="system"><span>▣</span> System</a>
     </nav>
 
@@ -353,6 +354,53 @@
         </div>
       </div>
 
+    </section>
+
+    <!-- ─── URL PROBE ─── -->
+    <section id="sec-urlprobe" class="section">
+
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>URL Probe</h2>
+            <span>Performs one normal HTTP GET request to the entered URL — informational only</span>
+          </div>
+          <span id="probeStatus" class="live-badge" style="background:rgba(36,141,255,.1);border-color:rgba(36,141,255,.3);color:#4fa8ff">READY</span>
+        </div>
+
+        <div class="probe-form">
+          <input id="probeUrlInput" type="text" placeholder="https://example.com"
+            style="flex:1;background:#0c1c2d;border:1px solid #203b55;color:#e8f0ff;
+                   padding:10px 14px;border-radius:8px;font-size:13px;outline:none">
+          <button id="probeBtn" onclick="probeUrl()" class="btn-probe">Probe</button>
+        </div>
+
+        <div class="probe-note">
+          This sends a single HTTP GET request from this machine to the entered URL.
+          Private, loopback, and link-local addresses are rejected.
+          Redirects are not followed. Results are not stored.
+        </div>
+
+        <div id="probeResult" class="probe-result" style="display:none">
+          <div class="probe-result-header">
+            <span id="probeResultBadge" class="status-pill">—</span>
+            <span id="probeResultTitle" class="probe-result-title">—</span>
+          </div>
+          <div class="probe-grid">
+            <div class="probe-field"><span>URL</span><strong id="prURL">—</strong></div>
+            <div class="probe-field"><span>HOSTNAME</span><strong id="prHostname">—</strong></div>
+            <div class="probe-field"><span>RESOLVED IP</span><strong id="prIP">—</strong></div>
+            <div class="probe-field"><span>HTTP STATUS</span><strong id="prStatus">—</strong></div>
+            <div class="probe-field"><span>RESPONSE TIME</span><strong id="prTime">—</strong></div>
+            <div class="probe-field"><span>TIMESTAMP</span><strong id="prTS">—</strong></div>
+          </div>
+          <div id="probeError" class="probe-error" style="display:none">
+            <span class="probe-error-icon">⚠</span>
+            <span id="probeErrorText">—</span>
+          </div>
+        </div>
+
+      </div>
     </section>
 
     <!-- ─── SYSTEM ─── -->

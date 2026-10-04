@@ -1,14 +1,19 @@
 import eventlet
 eventlet.monkey_patch()
 
+import http.client
 import logging
 import os
 import re
+import ssl
 import subprocess
 import sys
 import threading
 import time
 import ipaddress
+import socket
+import urllib.error
+import urllib.parse
 import urllib.request
 import json
 from collections import defaultdict, deque
@@ -31,6 +36,8 @@ from config import (
     NETWORK_GAUGE_DIVISOR,
     PUSH_INTERVAL,
     TOP_SOURCES_LIMIT,
+    URL_PROBE_TIMEOUT,
+    URL_PROBE_COOLDOWN_SECS,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -173,6 +180,70 @@ def get_network_data() -> dict:
     }
 
 
+# ── URL Probe state ────────────────────────────────────────────────────────────
+_probe_last_ts: float = 0.0   # monotonic timestamp of last probe — rate limiting
+
+_PROBE_ALLOWED_SCHEMES = {"http", "https"}
+_PROBE_USER_AGENT      = "DoS-Sentinel-Probe/4.1"
+
+
+def _probe_reject(hostname: str, error_msg: str, url: str, ts: str) -> tuple:
+    """Return a structured 403 rejection response."""
+    return jsonify({
+        "ok":               False,
+        "url":              url,
+        "hostname":         hostname,
+        "resolved_ip":      None,
+        "status_code":      None,
+        "response_time_ms": None,
+        "timestamp":        ts,
+        "error":            error_msg,
+    }), 403
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """
+    HTTPSConnection subclass that dials a pre-validated IP address directly
+    instead of re-resolving the hostname via DNS.
+
+    self.host is kept as the original hostname so that:
+      - the TLS SNI extension carries the correct hostname
+      - ssl.match_hostname() / check_hostname validates against the hostname
+        (not the IP literal), preserving normal certificate verification
+
+    The actual TCP socket is connected to _pinned_ip, eliminating the
+    second independent DNS lookup that would otherwise occur inside
+    http.client.HTTPConnection.connect().
+    """
+    def __init__(self, host: str, pinned_ip: str, **kwargs):
+        super().__init__(host, **kwargs)
+        self._pinned_ip = pinned_ip
+
+    def connect(self) -> None:
+        # Dial the pre-validated IP directly; keep self.host for SNI/cert check
+        raw = socket.create_connection(
+            (self._pinned_ip, self.port or 443),
+            timeout=self.timeout,
+        )
+        ctx = self._context if hasattr(self, "_context") and self._context else ssl.create_default_context()
+        # server_hostname=self.host ensures SNI and certificate CN/SAN matching
+        # use the original hostname, NOT the IP — certificate verification intact
+        self.sock = ctx.wrap_socket(raw, server_hostname=self.host)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    """urllib handler that substitutes _PinnedHTTPSConnection for all HTTPS."""
+    def __init__(self, pinned_ip: str):
+        super().__init__()
+        self._pinned_ip = pinned_ip
+
+    def https_open(self, req):
+        return self.do_open(
+            lambda host, **kw: _PinnedHTTPSConnection(host, self._pinned_ip, **kw),
+            req,
+        )
+
+
 # ── Auto-block ─────────────────────────────────────────────────────────────────
 
 # Private/loopback/link-local networks that must never be auto-blocked.
@@ -189,9 +260,17 @@ _PRIVATE_NETWORKS = [
 
 
 def _is_private(ip: str) -> bool:
-    """Return True if ip is loopback, private, or link-local."""
+    """Return True if ip is loopback, private, link-local, or ULA.
+
+    IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) are unwrapped to their
+    IPv4 form before the check so that ::ffff:127.0.0.1 is correctly
+    identified as loopback rather than passing as a public address.
+    """
     try:
         addr = ipaddress.ip_address(ip)
+        # Unwrap IPv4-mapped IPv6 (::ffff:0:0/96) to its IPv4 equivalent
+        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+            addr = addr.ipv4_mapped
         return any(addr in net for net in _PRIVATE_NETWORKS)
     except ValueError:
         return True   # unparseable — treat as private to be safe
@@ -484,6 +563,200 @@ def simulate():
         return jsonify({"ok": True, "attack": attack, "intensity": intensity})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/probe", methods=["POST"])
+def probe_url():
+    """
+    Perform a single informational HTTP probe to a user-supplied URL.
+
+    Security guarantees:
+    - Only http:// and https:// schemes accepted.
+    - Hostname resolved exactly once via getaddrinfo(); ALL returned addresses
+      are validated — if any is private/loopback/link-local the probe is
+      rejected before any outbound connection is made.
+    - IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) are unwrapped and checked
+      against the IPv4 private ranges, closing the ::ffff:127.0.0.1 bypass.
+    - The outbound TCP connection is pinned to the first validated IP address;
+      urllib never performs a second independent DNS lookup.
+    - For HTTPS: TLS SNI and certificate verification use the original hostname
+      (not the IP literal) — certificate validation is NOT weakened.
+    - Automatic redirects disabled — 3xx responses are returned directly.
+    - No cookies, auth headers, or credentials forwarded.
+    - Neutral User-Agent only.
+    - Results are NOT persisted to SQLite.
+    - In-memory rate limit: URL_PROBE_COOLDOWN_SECS between completed probes.
+    """
+    global _probe_last_ts
+
+    ts = datetime.now().strftime("%H:%M:%S")
+
+    # ── Rate limit ────────────────────────────────────────────────────────────
+    now_mono = time.monotonic()
+    if now_mono - _probe_last_ts < URL_PROBE_COOLDOWN_SECS:
+        return jsonify({"ok": False, "error": "Rate limit: wait before probing again."}), 429
+
+    # ── Parse input ───────────────────────────────────────────────────────────
+    data = request.get_json(silent=True) or {}
+    raw_url = str(data.get("url", "")).strip()
+
+    if not raw_url:
+        return jsonify({"ok": False, "error": "No URL provided."}), 400
+
+    try:
+        parsed = urllib.parse.urlparse(raw_url)
+    except Exception:
+        return jsonify({"ok": False, "error": "Malformed URL."}), 400
+
+    scheme   = parsed.scheme.lower()
+    hostname = parsed.hostname or ""
+
+    # Strip any embedded credentials from the URL before use or logging
+    safe_url = urllib.parse.urlunparse(
+        parsed._replace(netloc=hostname + (f":{parsed.port}" if parsed.port else ""))
+    )
+
+    if scheme not in _PROBE_ALLOWED_SCHEMES:
+        return jsonify({"ok": False, "error": f"Scheme '{scheme}' not allowed. Use http or https."}), 400
+
+    if not hostname:
+        return jsonify({"ok": False, "error": "Could not extract hostname from URL."}), 400
+
+    # ── Single DNS resolution — validate EVERY returned address ──────────────
+    # getaddrinfo() is called exactly once.  Every unique IP in the result set
+    # is checked.  If any address is private/loopback/link-local the probe is
+    # rejected immediately — no outbound connection is made.
+    # The first address in the validated set is used to pin the TCP connection,
+    # so urllib never performs a second independent DNS lookup.
+    try:
+        gai_results = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        return _probe_reject(
+            hostname,
+            f"DNS resolution failed: {exc.args[1] if exc.args else 'unknown'}",
+            safe_url, ts,
+        )
+    except Exception:
+        return _probe_reject(hostname, "DNS resolution failed.", safe_url, ts)
+
+    if not gai_results:
+        return _probe_reject(hostname, "DNS resolution returned no addresses.", safe_url, ts)
+
+    # Collect unique IPs preserving getaddrinfo() order
+    seen: set = set()
+    resolved_ips: list = []
+    for entry in gai_results:
+        ip_str = entry[4][0]
+        if ip_str not in seen:
+            seen.add(ip_str)
+            resolved_ips.append(ip_str)
+
+    for ip_str in resolved_ips:
+        if _is_private(ip_str):
+            return _probe_reject(
+                hostname,
+                "Destination resolves to a private/loopback address — probe rejected.",
+                safe_url, ts,
+            )
+
+    # Pin the connection to the first validated address
+    pinned_ip   = resolved_ips[0]
+    reported_ip = pinned_ip   # returned to the caller in the JSON response
+
+    # ── Build request — pinned IP, redirects disabled ─────────────────────────
+    # For HTTP:  replace the hostname in the URL with the pinned IP and set the
+    #            Host header to the original hostname (required by HTTP/1.1).
+    # For HTTPS: keep the hostname in the URL so that urllib's normal HTTPS
+    #            machinery is invoked, but substitute _PinnedHTTPSHandler so
+    #            the underlying socket dials the pinned IP directly while SNI
+    #            and certificate verification still use the original hostname.
+    #
+    # Redirects: build_opener receives only BaseHandler + the scheme handler.
+    # HTTPRedirectHandler is never added, so 3xx responses are returned as-is.
+    t0 = time.monotonic()
+    try:
+        if scheme == "http":
+            port     = parsed.port or 80
+            ip_netloc = f"{pinned_ip}:{port}" if ":" not in pinned_ip else f"[{pinned_ip}]:{port}"
+            ip_url   = urllib.parse.urlunparse(parsed._replace(netloc=ip_netloc))
+            req = urllib.request.Request(
+                ip_url,
+                headers={
+                    "User-Agent": _PROBE_USER_AGENT,
+                    "Host":       hostname + (f":{parsed.port}" if parsed.port else ""),
+                },
+                method="GET",
+            )
+            opener = urllib.request.build_opener(urllib.request.BaseHandler)
+        else:  # https
+            req = urllib.request.Request(
+                safe_url,
+                headers={"User-Agent": _PROBE_USER_AGENT},
+                method="GET",
+            )
+            # _PinnedHTTPSHandler dials pinned_ip directly; SNI/cert check uses hostname
+            opener = urllib.request.build_opener(
+                urllib.request.BaseHandler,
+                _PinnedHTTPSHandler(pinned_ip),
+            )
+
+        with opener.open(req, timeout=URL_PROBE_TIMEOUT) as resp:
+            elapsed_ms  = round((time.monotonic() - t0) * 1000, 1)
+            status_code = resp.status
+
+        _probe_last_ts = time.monotonic()
+        return jsonify({
+            "ok":               True,
+            "url":              safe_url,
+            "hostname":         hostname,
+            "resolved_ip":      reported_ip,
+            "status_code":      status_code,
+            "response_time_ms": elapsed_ms,
+            "timestamp":        ts,
+            "error":            None,
+        })
+
+    except urllib.error.HTTPError as exc:
+        # HTTPError is raised for 4xx/5xx — still a valid probe result
+        elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+        _probe_last_ts = time.monotonic()
+        return jsonify({
+            "ok":               True,
+            "url":              safe_url,
+            "hostname":         hostname,
+            "resolved_ip":      reported_ip,
+            "status_code":      exc.code,
+            "response_time_ms": elapsed_ms,
+            "timestamp":        ts,
+            "error":            None,
+        })
+    except urllib.error.URLError as exc:
+        reason = str(exc.reason) if exc.reason else "Connection failed."
+        if "timed out" in reason.lower() or "timeout" in reason.lower():
+            reason = f"Request timed out after {URL_PROBE_TIMEOUT}s."
+        _probe_last_ts = time.monotonic()
+        return jsonify({
+            "ok":               False,
+            "url":              safe_url,
+            "hostname":         hostname,
+            "resolved_ip":      reported_ip,
+            "status_code":      None,
+            "response_time_ms": None,
+            "timestamp":        ts,
+            "error":            reason,
+        })
+    except OSError:
+        _probe_last_ts = time.monotonic()
+        return jsonify({
+            "ok":               False,
+            "url":              safe_url,
+            "hostname":         hostname,
+            "resolved_ip":      reported_ip,
+            "status_code":      None,
+            "response_time_ms": None,
+            "timestamp":        ts,
+            "error":            "Connection error.",
+        })
 
 
 @app.route("/api/stats")

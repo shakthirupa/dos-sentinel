@@ -9,6 +9,7 @@ let anomalyCount = 0;
 let chartMode    = "syn";
 let lastData     = null;
 let _autoBlockEnabled = true;
+let _simResetTimer    = null;   // auto-reset simulator status badge
 
 let trafficChart, distributionChart, multiChart, bytesChart;
 
@@ -144,7 +145,7 @@ function updateGauges(cpu, mem, net) {
 
 function setText(id, val) {
     const el = document.getElementById(id);
-    if (el) el.innerText = val;
+    if (el) el.textContent = val;
 }
 
 function formatBytes(b) {
@@ -169,12 +170,13 @@ function pushAndTrim(chart, label, maxPoints, ...values) {
 function animateNumber(id, target) {
     const el = document.getElementById(id);
     if (!el) return;
-    const current = parseFloat(el.innerText) || 0;
+    const current = parseFloat(el.textContent) || 0;
     const diff = target - current;
-    if (Math.abs(diff) < 0.5) { el.innerText = target; return; }
-    el.innerText = (current + diff * 0.4).toFixed(Number.isInteger(target) ? 0 : 3);
+    if (Math.abs(diff) < 0.5) { el.textContent = target; return; }
+    el.textContent = (current + diff * 0.4).toFixed(Number.isInteger(target) ? 0 : 3);
 }
 
+// Safe pill builder — never uses raw network values as HTML
 function attackTypePill(type) {
     if (!type || type === "-") return "—";
     const span = document.createElement("span");
@@ -183,14 +185,22 @@ function attackTypePill(type) {
     return span.outerHTML;
 }
 
-function riskBadge(risk) {
-    const cls = risk === "HIGH" ? "risk-high" : risk === "MEDIUM" ? "risk-medium" : "risk-low";
-    return `<span class="status-pill ${cls}">${risk || "—"}</span>`;
+function confidencePill(conf) {
+    if (!conf) return "—";
+    const cls = conf === "HIGH" ? "conf-high" : conf === "MEDIUM" ? "conf-medium" : "conf-low";
+    const span = document.createElement("span");
+    span.className = "confidence-pill " + cls;
+    span.textContent = conf;
+    return span.outerHTML;
 }
 
-function confBadge(conf) {
-    const cls = conf === "HIGH" ? "status-anomaly" : conf === "MEDIUM" ? "status-suspicious" : "status-normal";
-    return `<span class="status-pill ${cls}">${conf || "—"}</span>`;
+function riskPill(risk) {
+    if (!risk) return "—";
+    const cls = risk === "HIGH" ? "status-anomaly" : risk === "MEDIUM" ? "status-suspicious" : "status-normal";
+    const span = document.createElement("span");
+    span.className = "status-pill " + cls;
+    span.textContent = risk;
+    return span.outerHTML;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -198,28 +208,45 @@ function confBadge(conf) {
 // ═══════════════════════════════════════════════════════
 
 function updateHttpTelemetry(tel) {
-    const unavail = document.getElementById("httpUnavailable");
-    const metrics = document.getElementById("httpMetrics");
-    const badge   = document.getElementById("httpAvailBadge");
-    if (!tel || tel.available === false) {
-        if (unavail) unavail.style.display = "flex";
-        if (metrics) metrics.style.display = "none";
-        if (badge)   { badge.textContent = "● OFFLINE"; badge.style.color = "#ff5360"; badge.style.borderColor = "rgba(255,83,96,.3)"; badge.style.background = "rgba(255,83,96,.08)"; }
+    const available   = tel && tel.available !== false;
+    const unavailDiv  = document.getElementById("httpUnavailable");
+    const metricsDiv  = document.getElementById("httpMetrics");
+    const availBadge  = document.getElementById("httpAvailBadge");
+
+    if (!available) {
+        if (unavailDiv)  unavailDiv.style.display  = "flex";
+        if (metricsDiv)  metricsDiv.style.display  = "none";
+        if (availBadge) {
+            availBadge.textContent = "● OFFLINE";
+            availBadge.style.color = "#ff5360";
+            availBadge.style.background = "rgba(255,83,96,.1)";
+            availBadge.style.borderColor = "rgba(255,83,96,.3)";
+        }
         return;
     }
-    if (unavail) unavail.style.display = "none";
-    if (metrics) metrics.style.display = "";
-    if (badge)   { badge.textContent = "● LIVE"; badge.style.color = ""; badge.style.borderColor = ""; badge.style.background = ""; }
 
-    setText("httpTotal",   tel.total_requests ?? 0);
-    setText("httpRps",     (tel.requests_per_sec ?? 0).toFixed(1));
+    if (unavailDiv)  unavailDiv.style.display  = "none";
+    if (metricsDiv)  metricsDiv.style.display  = "grid";
+    if (availBadge) {
+        availBadge.textContent = "● LIVE";
+        availBadge.style.color = "";
+        availBadge.style.background = "";
+        availBadge.style.borderColor = "";
+    }
+
+    setText("httpTotal",   tel.total_requests   ?? 0);
+    setText("httpRps",     tel.requests_per_sec ?? 0);
     setText("httpSuccess", tel.successful_responses ?? 0);
-    setText("httpErrors",  tel.error_responses ?? 0);
-    setText("httpAvgRt",   (tel.avg_response_time_ms ?? 0).toFixed(1) + " ms");
+    setText("httpErrors",  tel.error_responses  ?? 0);
+    setText("httpAvgRt",   (tel.avg_response_time_ms ?? 0).toFixed(2) + " ms");
 
-    const sc  = tel.status_codes || {};
-    const el  = document.getElementById("httpStatusCodes");
-    if (el) el.textContent = `2xx:${sc["2xx"]??0}  3xx:${sc["3xx"]??0}  4xx:${sc["4xx"]??0}  5xx:${sc["5xx"]??0}`;
+    const sc = tel.status_codes || {};
+    setText("httpStatusCodes",
+        "2xx: " + (sc["2xx"] ?? 0) +
+        "  3xx: " + (sc["3xx"] ?? 0) +
+        "  4xx: " + (sc["4xx"] ?? 0) +
+        "  5xx: " + (sc["5xx"] ?? 0)
+    );
 }
 
 // ═══════════════════════════════════════════════════════
@@ -233,26 +260,37 @@ function renderAttackLog(log) {
     if (!log || log.length === 0) {
         const tr = document.createElement("tr");
         const td = document.createElement("td");
-        td.colSpan = 7;
+        td.colSpan = 8;
         td.style.cssText = "text-align:center;color:#4f6984;padding:30px";
         td.textContent = "No attacks detected yet";
         tr.appendChild(td);
         atbody.appendChild(tr);
         return;
     }
-    [...log].forEach(ev => {
+    [...log].reverse().forEach(ev => {
         const tr = document.createElement("tr");
         tr.classList.add("row-anomaly");
 
-        const tdTime = document.createElement("td"); tdTime.textContent = ev.ts || ev.time || "-";
-        const tdDet  = document.createElement("td"); tdDet.innerHTML  = `<span class="status-pill status-anomaly">${ev.detection || ev.status || "ANOMALY"}</span>`;
-        const tdAt   = document.createElement("td"); tdAt.innerHTML   = attackTypePill(ev.attack_type);
-        const tdConf = document.createElement("td"); tdConf.innerHTML = confBadge(ev.confidence);
-        const tdRisk = document.createElement("td"); tdRisk.innerHTML = riskBadge(ev.risk);
-        const tdSc   = document.createElement("td"); tdSc.textContent = ev.score != null ? Number(ev.score).toFixed(4) : "-";
-        const tdIp   = document.createElement("td"); tdIp.textContent = ev.source_ip || "-";
+        const cells = [
+            ev.time || ev.ts || "-",
+            ev.syn_recv ?? "-",
+            ev.connections ?? ev.conns ?? "-",
+            ev.score ?? "-",
+            null,   // attack type pill — set below
+            null,   // confidence pill
+            null,   // risk pill
+            ev.source_ip || "-",
+        ];
 
-        tr.append(tdTime, tdDet, tdAt, tdConf, tdRisk, tdSc, tdIp);
+        cells.forEach((val, i) => {
+            const td = document.createElement("td");
+            if (i === 4) td.innerHTML = attackTypePill(ev.attack_type);
+            else if (i === 5) td.innerHTML = confidencePill(ev.confidence);
+            else if (i === 6) td.innerHTML = riskPill(ev.risk);
+            else td.textContent = val;
+            tr.appendChild(td);
+        });
+
         atbody.appendChild(tr);
     });
 }
@@ -273,79 +311,95 @@ async function loadFullAttackLog() {
 
 function applyUpdate(data) {
     lastData = data;
-    const t  = data.traffic;
-    const ts = data.timestamp;
+    const t  = data.traffic || {};
+    const ts = data.timestamp || "";
 
     setText("clock", new Date().toLocaleTimeString());
 
-    animateNumber("synRecv",          t.syn_recv);
-    animateNumber("established",      t.established);
-    animateNumber("totalConnections", t.total_connections);
-    setText("bytesSent",     formatBytes(t.bytes_sent_per_sec));
-    setText("bytesReceived", formatBytes(t.bytes_recv_per_sec));
-    setText("velocityCard",  t.conn_velocity + "/s");
-    setText("connVelocity",  t.conn_velocity);
+    // Network metrics
+    animateNumber("synRecv",          t.syn_recv          ?? 0);
+    animateNumber("established",      t.established       ?? 0);
+    animateNumber("totalConnections", t.total_connections ?? 0);
+    setText("bytesSent",     formatBytes(t.bytes_sent_per_sec ?? 0));
+    setText("bytesReceived", formatBytes(t.bytes_recv_per_sec ?? 0));
+    setText("velocityCard",  (t.conn_velocity ?? 0) + "/s");
 
-    const card      = document.getElementById("threatCard");
-    const isAnomaly  = data.detection === "ANOMALY";
-    const isCooldown = data.detection === "COOLDOWN";
+    // Detection state
+    const detection = data.detection || "NORMAL";
+    const isAnomaly  = detection === "ANOMALY";
+    const isCooldown = detection === "COOLDOWN";
 
-    card.className = "threat-card" + (isAnomaly ? " anomaly" : isCooldown ? " cooldown" : "");
-    setText("threatStatus",   data.detection);
-    setText("threatMessage",  isAnomaly  ? "⚠ Possible DoS-related anomaly detected!"
-                            : isCooldown ? "⏳ Cooling down after anomaly…"
-                            : "Server traffic appears normal");
-    setText("shieldIcon",     isAnomaly ? "!" : isCooldown ? "⏳" : "✓");
-    animateNumber("anomalyScore", data.anomaly_score);
-    setText("riskLevel",       data.risk);
-    setText("confidenceLevel", data.confidence || "—");
-    setText("totalAnomalies",  data.stats.total_anomalies);
-    setText("attackType",      isAnomaly ? (data.attack_type || "Unknown DoS") : "—");
-    setText("attackTypeSource", isAnomaly ? (data.attack_type_source || "—") : "—");
-    setText("modelVersion",    data.model_version || "—");
-    setText("modelStatus",     data.system && data.system.model === "ERROR" ? "error" : "loaded");
-    const modelStatusEl = document.getElementById("modelStatus");
-    if (modelStatusEl) modelStatusEl.style.color = (data.system && data.system.model === "ERROR") ? "#ff5360" : "#42f398";
+    const card = document.getElementById("threatCard");
+    card.className = "threat-card" +
+        (isAnomaly  ? " anomaly"  : "") +
+        (isCooldown ? " cooldown" : "");
 
-    // System section model fields
-    setText("statModelVersion", data.model_version || "—");
-    const statModelStatusEl = document.getElementById("statModelStatus");
-    if (statModelStatusEl) {
-        if (data.system && data.system.model === "ERROR") {
-            statModelStatusEl.textContent = "● ERROR";
-            statModelStatusEl.style.color = "#ff5360";
-        } else {
-            statModelStatusEl.textContent = "● ACTIVE";
-            statModelStatusEl.style.color = "#42f398";
-        }
+    setText("threatStatus", detection);
+    setText("threatMessage",
+        isAnomaly  ? "Possible DoS-related anomaly detected!" :
+        isCooldown ? "Cooling down — monitoring for recurrence..." :
+                     "Server traffic appears normal"
+    );
+    setText("shieldIcon", isAnomaly ? "!" : isCooldown ? "~" : "✓");
+
+    animateNumber("anomalyScore", data.anomaly_score ?? 0);
+    setText("riskLevel",       data.risk        || "LOW");
+    setText("confidenceLevel", data.confidence  || "LOW");
+    setText("totalAnomalies",  (data.stats || {}).total_anomalies ?? 0);
+
+    // Attack type + source
+    const atkType   = isAnomaly ? (data.attack_type || "Unclassified Anomaly") : "—";
+    const atkSource = isAnomaly ? (data.attack_type_source === "rule_based" ? "Rule-based" : "—") : "—";
+    setText("attackType",       atkType);
+    setText("attackTypeSource", atkSource);
+
+    // Model version + status
+    const modelVer    = data.model_version || "—";
+    const modelStatus = (data.system || {}).model || "—";
+    setText("modelVersion",     modelVer);
+    setText("modelStatus",      modelStatus);
+    setText("statModelVersion", modelVer);
+    const statStatusEl = document.getElementById("statModelStatus");
+    if (statStatusEl) {
+        statStatusEl.textContent = modelStatus === "ACTIVE" ? "● ACTIVE" : "● " + modelStatus;
+        statStatusEl.style.color = modelStatus === "ACTIVE" ? "#42f398" : "#ff5360";
     }
 
+    // Alert banner
     if (isAnomaly) {
         const banner = document.getElementById("alertBanner");
         banner.classList.add("visible");
-        setText("alertText", `🚨 ${data.attack_type || "DoS Anomaly"} — Score: ${data.anomaly_score} | Risk: ${data.risk} | Confidence: ${data.confidence} | SYN_RECV: ${t.syn_recv}`);
+        setText("alertText",
+            (data.attack_type || "DoS Anomaly") +
+            " — Score: " + (data.anomaly_score ?? 0) +
+            " | Risk: " + (data.risk || "?") +
+            " | Confidence: " + (data.confidence || "?") +
+            " | SYN_RECV: " + (t.syn_recv ?? 0)
+        );
     }
 
-    setText("attackBadge", data.stats.total_anomalies);
+    setText("attackBadge", (data.stats || {}).total_anomalies ?? 0);
 
-    // HTTP telemetry
-    updateHttpTelemetry(data.http_telemetry);
-
+    // Traffic chart coloring
     const ds       = trafficChart.data.datasets[0];
     const colorArr = Array.isArray(ds.pointBackgroundColor) ? ds.pointBackgroundColor : [];
-    colorArr.push(isAnomaly ? "#ff4355" : "#248dff");
+    colorArr.push(isAnomaly ? "#ff4355" : isCooldown ? "#ffb63e" : "#248dff");
     if (colorArr.length > 60) colorArr.shift();
     ds.pointBackgroundColor = colorArr;
-    ds.borderColor     = isAnomaly ? "#ff4355" : "#248dff";
-    ds.backgroundColor = isAnomaly ? "rgba(255,67,85,0.10)" : "rgba(36,141,255,0.08)";
+    ds.borderColor     = isAnomaly ? "#ff4355" : isCooldown ? "#ffb63e" : "#248dff";
+    ds.backgroundColor = isAnomaly ? "rgba(255,67,85,0.10)" : isCooldown ? "rgba(255,182,62,0.08)" : "rgba(36,141,255,0.08)";
 
-    const synVal = chartMode === "syn" ? t.syn_recv
-                 : chartMode === "est" ? t.established
-                 : t.total_connections;
+    const synVal = chartMode === "syn" ? (t.syn_recv ?? 0)
+                 : chartMode === "est" ? (t.established ?? 0)
+                 : (t.total_connections ?? 0);
     pushAndTrim(trafficChart, ts, 60, synVal);
-    pushAndTrim(multiChart,   ts, 60, t.syn_recv, t.established, t.total_connections);
-    pushAndTrim(bytesChart,   ts, 40, (t.bytes_sent_per_sec / 1024).toFixed(2), (t.bytes_recv_per_sec / 1024).toFixed(2));
+    pushAndTrim(multiChart,   ts, 60, t.syn_recv ?? 0, t.established ?? 0, t.total_connections ?? 0);
+    pushAndTrim(bytesChart,   ts, 40,
+        ((t.bytes_sent_per_sec ?? 0) / 1024).toFixed(2),
+        ((t.bytes_recv_per_sec ?? 0) / 1024).toFixed(2)
+    );
 
+    // Distribution donut
     if (isAnomaly) anomalyCount++; else normalCount++;
     const total = normalCount + anomalyCount;
     const nPct  = total === 0 ? 100 : Math.round(normalCount / total * 100);
@@ -355,25 +409,41 @@ function applyUpdate(data) {
     distributionChart.data.datasets[0].data = [normalCount, anomalyCount];
     distributionChart.update();
 
-    // Events table
+    // Recent events table
     const tbody = document.getElementById("eventsTable");
     tbody.innerHTML = "";
-    [...data.events].reverse().forEach(ev => {
-        const det = ev.status || ev.detection || "NORMAL";
-        const cls = det === "ANOMALY" ? "status-anomaly" : (ev.score < 0 ? "status-suspicious" : "status-normal");
-        const tr  = document.createElement("tr");
+    [...(data.events || [])].reverse().forEach(ev => {
+        const det = ev.status || "NORMAL";
+        const cls = det === "ANOMALY" ? "status-anomaly"
+                  : det === "COOLDOWN" ? "status-suspicious"
+                  : (ev.score < 0 ? "status-suspicious" : "status-normal");
+        const tr = document.createElement("tr");
         if (det === "ANOMALY") tr.classList.add("row-anomaly");
 
-        const tdTime  = document.createElement("td"); tdTime.textContent  = ev.time || "-";
-        const tdMsg   = document.createElement("td"); tdMsg.textContent   = ev.message || "-";
-        const tdSyn   = document.createElement("td"); tdSyn.textContent   = ev.syn_recv ?? "-";
-        const tdConns = document.createElement("td"); tdConns.textContent = ev.connections ?? "-";
-        const tdSc    = document.createElement("td"); tdSc.textContent    = ev.score != null ? Number(ev.score).toFixed(4) : "-";
-        const tdAt    = document.createElement("td"); tdAt.innerHTML      = attackTypePill(ev.attack_type);
-        const tdConf  = document.createElement("td"); tdConf.innerHTML    = confBadge(ev.confidence);
-        const tdSt    = document.createElement("td"); tdSt.innerHTML      = `<span class="status-pill ${cls}">${det}</span>`;
-
-        tr.append(tdTime, tdMsg, tdSyn, tdConns, tdSc, tdAt, tdConf, tdSt);
+        const cols = [
+            ev.time,
+            ev.message,
+            ev.syn_recv ?? "-",
+            ev.connections ?? "-",
+            ev.score ?? "-",
+            null,   // attack type pill
+            null,   // confidence pill
+            null,   // status pill
+        ];
+        cols.forEach((val, i) => {
+            const td = document.createElement("td");
+            if (i === 5) td.innerHTML = attackTypePill(ev.attack_type);
+            else if (i === 6) td.innerHTML = confidencePill(ev.confidence);
+            else if (i === 7) {
+                const sp = document.createElement("span");
+                sp.className = "status-pill " + cls;
+                sp.textContent = det;
+                td.appendChild(sp);
+            } else {
+                td.textContent = val ?? "-";
+            }
+            tr.appendChild(td);
+        });
         tbody.appendChild(tr);
     });
 
@@ -385,87 +455,97 @@ function applyUpdate(data) {
 
     // IP Manager
     const ipTable = document.getElementById("ipTable");
-    ipTable.innerHTML = `
-        <div class="source-row header">
-            <div>IP ADDRESS</div><div>CONNECTIONS</div><div>TREND</div><div>ACTION</div>
-        </div>`;
+    const header  = document.createElement("div");
+    header.className = "source-row header";
+    ["IP ADDRESS", "CONNECTIONS", "TREND", "ACTION"].forEach(h => {
+        const d = document.createElement("div");
+        d.textContent = h;
+        header.appendChild(d);
+    });
+    ipTable.innerHTML = "";
+    ipTable.appendChild(header);
 
-    if (!data.sources || data.sources.length === 0) {
+    const sources = data.sources || [];
+    if (sources.length === 0) {
         const empty = document.createElement("div");
-        empty.style.cssText = "padding:24px 18px;color:#4f6984;font-size:12px";
-        empty.textContent = "No active source IPs detected";
+        empty.style.cssText = "padding:20px 18px;color:#4f6984;font-size:12px";
+        empty.textContent = "No active source IPs";
         ipTable.appendChild(empty);
     } else {
-        data.sources.forEach(src => {
-            if (!src || !src.ip) return;
+        sources.forEach(src => {
             const row = document.createElement("div");
             row.className = "source-row" + (src.blocked ? " blocked-row" : "");
 
-            const divIp    = document.createElement("div"); divIp.className = "ip-addr"; divIp.textContent = src.ip;
-            const divConns = document.createElement("div"); divConns.textContent = src.connections ?? 0;
+            const ipDiv = document.createElement("div");
+            ipDiv.className = "ip-addr";
+            ipDiv.textContent = src.ip || "—";
 
-            const divTrend = document.createElement("div"); divTrend.className = "trend-mini";
+            const connDiv = document.createElement("div");
+            connDiv.textContent = src.connections ?? 0;
+
+            const trendDiv = document.createElement("div");
+            trendDiv.className = "trend-mini";
             (src.trend || []).forEach(v => {
                 const bar = document.createElement("span");
                 bar.className = "trend-bar";
                 bar.style.height = Math.min(v * 4, 20) + "px";
-                divTrend.appendChild(bar);
+                trendDiv.appendChild(bar);
             });
 
-            const divAct = document.createElement("div");
-            const btn    = document.createElement("button");
-            if (src.blocked) {
-                btn.className   = "btn-unblock";
-                btn.textContent = "Unblock";
-                btn.addEventListener("click", () => unblockIp(src.ip));
-            } else {
-                btn.className   = "btn-block";
-                btn.textContent = "Block";
-                btn.addEventListener("click", () => blockIp(src.ip));
-            }
-            divAct.appendChild(btn);
-            row.append(divIp, divConns, divTrend, divAct);
+            const actDiv = document.createElement("div");
+            const btn = document.createElement("button");
+            btn.className = src.blocked ? "btn-unblock" : "btn-block";
+            btn.textContent = src.blocked ? "Unblock" : "Block";
+            const ipVal = src.ip;
+            btn.addEventListener("click", () => src.blocked ? unblockIp(ipVal) : blockIp(ipVal));
+            actDiv.appendChild(btn);
+
+            row.appendChild(ipDiv);
+            row.appendChild(connDiv);
+            row.appendChild(trendDiv);
+            row.appendChild(actDiv);
             ipTable.appendChild(row);
         });
     }
-    setText("blockedCount", data.stats.blocked_count + " Blocked");
 
-    updateGauges(Math.round(data.system.cpu), Math.round(data.system.memory), Math.round(data.system.network));
+    setText("blockedCount", (data.stats || {}).blocked_count + " Blocked");
 
-    setText("statUptime",    data.stats.uptime);
-    setText("statEvents",    data.stats.total_events);
-    setText("statAnomalies", data.stats.total_anomalies);
-    setText("statBlocked",   data.stats.blocked_count);
-    setText("sidebarUptime", "◷ " + data.stats.uptime);
+    // System gauges
+    const sys = data.system || {};
+    updateGauges(Math.round(sys.cpu || 0), Math.round(sys.memory || 0), Math.round(sys.network || 0));
+
+    // Session stats
+    const st = data.stats || {};
+    setText("statUptime",    st.uptime    || "00:00:00");
+    setText("statEvents",    st.total_events    ?? 0);
+    setText("statAnomalies", st.total_anomalies ?? 0);
+    setText("statBlocked",   st.blocked_count   ?? 0);
+    setText("sidebarUptime", "◷ " + (st.uptime || "00:00:00"));
 
     // Auto-block panel
-    const ab = data.stats;
-    _autoBlockEnabled = ab.auto_block !== false;
+    _autoBlockEnabled = st.auto_block !== false;
     setText("abStatus",    _autoBlockEnabled ? "ENABLED" : "DISABLED");
     const abEl = document.getElementById("abStatus");
     if (abEl) abEl.style.color = _autoBlockEnabled ? "#42f398" : "#ff5360";
-    setText("abThreshold", (ab.auto_block_threshold || 3) + " anomalies");
-    setText("abBlocked",   ab.blocked_count + " IPs");
+    setText("abThreshold", (st.auto_block_threshold || 3) + " anomalies");
+    setText("abBlocked",   (st.blocked_count ?? 0) + " IPs");
     const toggle = document.getElementById("autoBlockToggle");
-    if (toggle) toggle.innerText = "Auto-Block: " + (_autoBlockEnabled ? "ON" : "OFF");
+    if (toggle) toggle.textContent = "Auto-Block: " + (_autoBlockEnabled ? "ON" : "OFF");
+
+    // HTTP telemetry
+    updateHttpTelemetry(data.http_telemetry);
 }
 
 // ═══════════════════════════════════════════════════════
 //  Simulator
 // ═══════════════════════════════════════════════════════
 
-let _simResetTimer = null;
-
-function setSimStatus(text, color) {
-    const el = document.getElementById("simStatus");
-    if (!el) return;
-    el.textContent = text;
-    el.style.color = color;
-}
-
 async function launchSim(attack, intensity) {
-    setSimStatus(`LAUNCHING ${attack.toUpperCase()}…`, "#ffb63e");
-    if (_simResetTimer) { clearTimeout(_simResetTimer); _simResetTimer = null; }
+    const simStatus = document.getElementById("simStatus");
+    if (simStatus) {
+        simStatus.textContent = "LAUNCHING " + attack.toUpperCase() + "...";
+        simStatus.style.color = "#ffb63e";
+    }
     try {
         const res  = await fetch("/api/simulate", {
             method: "POST",
@@ -473,15 +553,26 @@ async function launchSim(attack, intensity) {
             body: JSON.stringify({ attack, intensity })
         });
         const data = await res.json();
-        if (data.ok) {
-            setSimStatus(`RUNNING: ${attack.toUpperCase()} (${intensity})`, "#ff6572");
-            // Auto-reset after 130 s (default simulator timeout is 120 s)
-            _simResetTimer = setTimeout(() => setSimStatus("IDLE", "#b180ff"), 130_000);
-        } else {
-            setSimStatus("ERROR: " + (data.error || "failed"), "#ff9e25");
+        if (simStatus) {
+            if (data.ok) {
+                simStatus.textContent = "RUNNING: " + attack.toUpperCase() + " (" + intensity + ")";
+                simStatus.style.color = "#ff6572";
+                // Auto-reset after simulator default timeout (120s) + buffer
+                clearTimeout(_simResetTimer);
+                _simResetTimer = setTimeout(() => {
+                    simStatus.textContent = "IDLE";
+                    simStatus.style.color = "#b180ff";
+                }, 130000);
+            } else {
+                simStatus.textContent = "ERROR: " + (data.error || "failed");
+                simStatus.style.color = "#ff9e25";
+            }
         }
     } catch (e) {
-        setSimStatus("LAUNCH FAILED", "#ff5360");
+        if (simStatus) {
+            simStatus.textContent = "LAUNCH FAILED";
+            simStatus.style.color = "#ff5360";
+        }
     }
 }
 
@@ -512,11 +603,100 @@ async function saveAutoBlock() {
 // ═══════════════════════════════════════════════════════
 
 async function blockIp(ip) {
-    await fetch("/api/block", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip }) });
+    await fetch("/api/block", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ip })
+    });
 }
 
 async function unblockIp(ip) {
-    await fetch("/api/unblock", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip }) });
+    await fetch("/api/unblock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ip })
+    });
+}
+
+// ═══════════════════════════════════════════════════════
+//  URL Probe
+// ═══════════════════════════════════════════════════════
+
+function setProbeStatus(text, color) {
+    const el = document.getElementById("probeStatus");
+    if (!el) return;
+    el.textContent = text;
+    el.style.color = color || "";
+}
+
+async function probeUrl() {
+    const input = document.getElementById("probeUrlInput");
+    const btn   = document.getElementById("probeBtn");
+    const url   = input ? input.value.trim() : "";
+
+    if (!url) {
+        setProbeStatus("Enter a URL first.", "#ff9e25");
+        return;
+    }
+
+    if (btn) { btn.disabled = true; btn.textContent = "Probing…"; }
+    setProbeStatus("PROBING", "#ffb63e");
+
+    const resultEl = document.getElementById("probeResult");
+    const errEl    = document.getElementById("probeError");
+    if (resultEl) resultEl.style.display = "none";
+    if (errEl)    errEl.style.display    = "none";
+
+    let data;
+    try {
+        const res = await fetch("/api/probe", {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({ url }),
+        });
+        data = await res.json();
+    } catch (e) {
+        setProbeStatus("ERROR", "#ff5360");
+        if (errEl) {
+            errEl.style.display = "flex";
+            const errTx = document.getElementById("probeErrorText");
+            if (errTx) errTx.textContent = "Network error — could not reach the server.";
+        }
+        return;
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "Probe"; }
+    }
+
+    // Determine status from HTTP response semantics
+    if (!data.ok && data.error && data.error.toLowerCase().includes("rate limit")) {
+        setProbeStatus("RATE LIMITED", "#ff9e25");
+    } else if (data.ok) {
+        setProbeStatus("SUCCESS", "#42f398");
+    } else {
+        setProbeStatus("ERROR", "#ff5360");
+    }
+
+    // Populate the 6 result fields regardless of ok/error — textContent only
+    const set = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val ?? "—"; };
+    set("prURL",      data.url);
+    set("prHostname", data.hostname);
+    set("prIP",       data.resolved_ip);
+    set("prStatus",   data.status_code != null ? String(data.status_code) : "—");
+    set("prTime",     data.response_time_ms != null ? data.response_time_ms + " ms" : "—");
+    set("prTS",       data.timestamp);
+
+    // #probeError is a child of #probeResult — show the outer container first,
+    // then toggle the inner error panel based on whether the probe succeeded.
+    if (resultEl) resultEl.style.display = "block";
+    if (data.ok) {
+        if (errEl) errEl.style.display = "none";
+    } else {
+        if (errEl) {
+            errEl.style.display = "flex";
+            const errTx = document.getElementById("probeErrorText");
+            if (errTx) errTx.textContent = data.error || "Unknown error.";
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -556,7 +736,10 @@ document.querySelectorAll(".nav-item").forEach(item => {
         if (target) target.classList.add("active");
         if (sec === "attacks") loadFullAttackLog();
         if (sec === "traffic") {
-            setTimeout(() => { multiChart && multiChart.resize(); bytesChart && bytesChart.resize(); }, 50);
+            setTimeout(() => {
+                multiChart && multiChart.resize();
+                bytesChart && bytesChart.resize();
+            }, 50);
         }
     });
 });
@@ -567,12 +750,12 @@ document.querySelectorAll(".nav-item").forEach(item => {
 
 socket.on("connect", () => {
     document.getElementById("wsDot").className   = "dot green pulse";
-    document.getElementById("wsLabel").innerText = "Live";
+    document.getElementById("wsLabel").textContent = "Live";
 });
 
 socket.on("disconnect", () => {
     document.getElementById("wsDot").className   = "dot red-dot";
-    document.getElementById("wsLabel").innerText = "Disconnected";
+    document.getElementById("wsLabel").textContent = "Disconnected";
 });
 
 socket.on("update",          data => applyUpdate(data));
@@ -582,7 +765,7 @@ socket.on("ip_auto_blocked", d    => {
     console.log("Auto-blocked:", d.ip);
     const banner = document.getElementById("alertBanner");
     banner.classList.add("visible");
-    setText("alertText", `🔒 Auto-blocked IP: ${d.ip} — repeated anomaly trigger`);
+    setText("alertText", "Auto-blocked IP: " + d.ip + " — repeated anomaly trigger");
 });
 
 // ═══════════════════════════════════════════════════════
